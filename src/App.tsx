@@ -1257,7 +1257,7 @@ export default function App() {
       { id: 'Manutenção', label: 'Manutenção', icon: Wrench, color: 'bg-amber-600' },
       { id: 'Supervisão', label: 'Supervisão', icon: Briefcase, color: 'bg-violet-600' },
       { id: 'loans-external', label: 'Empréstimos', icon: Monitor, color: 'bg-orange-600', url: 'https://www.google.com' },
-      { id: 'scheduling-external', label: 'Agendamento Ambiente', icon: Calendar, color: 'bg-slate-700', url: 'https://chavesporto.vercel.app' },
+      { id: 'scheduling-external', label: 'Agendamento Ambientes', icon: Calendar, color: 'bg-slate-700', url: 'https://chavesporto.vercel.app' },
       { id: 'class-panel-external', label: 'Painel de Aulas', icon: BookOpen, color: 'bg-indigo-600', url: 'https://chavesporto.vercel.app/painel' },
       { id: 'ticket-tracking', label: 'Acompanhamento', icon: Search, color: 'bg-teal-600' },
       { id: 'useful-links', label: 'Links Úteis', icon: Link2, color: 'bg-rose-600' },
