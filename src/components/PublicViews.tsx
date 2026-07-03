@@ -943,17 +943,11 @@ export const LoanRequestView = ({ setView, showMessage, setCreatedLoanId }: Loan
                   <div className="p-5 bg-blue-50 border border-blue-200 rounded-2xl space-y-4">
                     <div className="flex items-center gap-2 text-blue-700">
                       <CheckCircle2 className="w-6 h-6" />
-                      <h4 className="font-bold text-lg">Aprovado — Retire com o PIN</h4>
+                      <h4 className="font-bold text-lg">Aprovado — Pronto para Retirada</h4>
                     </div>
-                    {selectedLoan.pin && (
-                      <div className="text-center">
-                        <p className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-2">Seu PIN de Retirada</p>
-                        <div className="bg-blue-600 text-white px-8 py-4 rounded-2xl font-mono font-black text-4xl tracking-widest shadow-lg shadow-blue-200 inline-block">
-                          {selectedLoan.pin}
-                        </div>
-                        <p className="text-xs text-blue-600 mt-2">Use este PIN no botão abaixo para confirmar a retirada do equipamento.</p>
-                      </div>
-                    )}
+                    <div className="p-4 bg-white border border-blue-100 rounded-xl text-sm text-blue-800">
+                      <p>Sua solicitação foi aprovada. Por razões de segurança, utilize o **PIN de 4 dígitos** enviado ao seu e-mail (ou informado pelo gestor) para liberar o equipamento no botão abaixo.</p>
+                    </div>
                     {selectedLoan.terms && (
                       <div className="bg-white border border-blue-100 rounded-xl p-4">
                         <p className="text-xs font-bold text-blue-400 uppercase tracking-wider mb-2">Termos e Acordo</p>
@@ -961,6 +955,7 @@ export const LoanRequestView = ({ setView, showMessage, setCreatedLoanId }: Loan
                       </div>
                     )}
                   </div>
+
                   <Button onClick={() => { setShowReleaseModal(true); setReleaseStep('pin'); }} className="w-full h-12 bg-blue-600 hover:bg-blue-700">
                     <KeyRound className="w-5 h-5" /> Retirar Equipamento (Liberar)
                   </Button>

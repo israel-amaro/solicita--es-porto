@@ -1219,14 +1219,12 @@ app.delete("/api/users/:id", authenticate, isAdmin, async (req, res) => {
 
 // --- Empréstimos (Loans) ---
 
-/** Helper: strip PIN from a loan object unless status is 'autorizado' */
+/** Helper: strip PIN from a loan object for public routes */
 function sanitizeLoan(loan: any) {
-  if (loan.status !== 'autorizado') {
-    const { pin, ...rest } = loan;
-    return rest;
-  }
-  return loan;
+  const { pin, ...rest } = loan;
+  return rest;
 }
+
 
 // Helper functions to send notifications
 function notifyManagerAboutNewLoan(loan: any) {
