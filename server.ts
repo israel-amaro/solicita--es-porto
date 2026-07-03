@@ -20,12 +20,45 @@ import {
 } from "firebase/firestore";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import nodemailer from "nodemailer";
 import fs from 'fs';
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-key";
+
+// SMTP Configuration
+const smtpConfig = {
+  host: process.env.SMTP_HOST || "smtp.gmail.com",
+  port: Number(process.env.SMTP_PORT) || 465,
+  secure: process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) === 465 : true,
+  auth: {
+    user: process.env.SMTP_USER || "",
+    pass: process.env.SMTP_PASS || ""
+  }
+};
+
+const transporter = nodemailer.createTransport(smtpConfig);
+
+async function sendEmail({ to, subject, html }: { to: string; subject: string; html: string }) {
+  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+    console.warn("⚠️ SMTP_USER ou SMTP_PASS não configurados nas variáveis de ambiente. E-mail não enviado:", { to, subject });
+    return;
+  }
+  try {
+    const mailOptions = {
+      from: process.env.SMTP_FROM || process.env.SMTP_USER,
+      to,
+      subject,
+      html
+    };
+    await transporter.sendMail(mailOptions);
+    console.log(`✉️ E-mail enviado para ${to}: "${subject}"`);
+  } catch (error) {
+    console.error("❌ Erro ao enviar e-mail:", error);
+  }
+}
 
 // Firebase Configuration
 let firebaseConfig: any = {};
@@ -1185,22 +1218,106 @@ app.delete("/api/users/:id", authenticate, isAdmin, async (req, res) => {
 });
 
 // --- Empréstimos (Loans) ---
+
+/** Helper: strip PIN from a loan object unless status is 'autorizado' */
+function sanitizeLoan(loan: any) {
+  if (loan.status !== 'autorizado') {
+    const { pin, ...rest } = loan;
+    return rest;
+  }
+  return loan;
+}
+
+// Helper functions to send notifications
+function notifyManagerAboutNewLoan(loan: any) {
+  const managerEmail = process.env.MANAGER_EMAIL;
+  if (!managerEmail) {
+    console.warn("⚠️ MANAGER_EMAIL não configurado nas variáveis de ambiente. Alerta de novo empréstimo não enviado.");
+    return;
+  }
+
+  sendEmail({
+    to: managerEmail,
+    subject: `📋 Novo Empréstimo Solicitado: ${loan.equipment} - ${loan.requester_name}`,
+    html: `
+      <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e1e1e1; border-radius: 12px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+        <div style="text-align: center; border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 20px;">
+          <h2 style="color: #007bff; margin: 0; font-size: 22px;">Nova Solicitação de Empréstimo</h2>
+        </div>
+        <p>Um novo empréstimo foi solicitado no sistema de solicitações:</p>
+        <div style="background-color: #f8f9fa; border-left: 4px solid #007bff; padding: 15px; margin: 15px 0; border-radius: 4px; font-size: 15px;">
+          <p style="margin: 6px 0;"><strong>Equipamento:</strong> ${loan.equipment}</p>
+          <p style="margin: 6px 0;"><strong>Solicitante:</strong> ${loan.requester_name} (${loan.registration})</p>
+          <p style="margin: 6px 0;"><strong>E-mail:</strong> ${loan.email}</p>
+          <p style="margin: 6px 0;"><strong>Telefone:</strong> ${loan.phone}</p>
+          <p style="margin: 6px 0;"><strong>Local de Uso:</strong> ${loan.location}</p>
+          <p style="margin: 6px 0;"><strong>Motivo:</strong> ${loan.reason}</p>
+          <p style="margin: 6px 0;"><strong>Solicitado em:</strong> ${new Date(loan.created_at).toLocaleString('pt-BR')}</p>
+        </div>
+        <p>Acesse o painel administrativo da aplicação para aprovar ou reprovar esta solicitação.</p>
+        <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 16px; font-size: 12px; color: #777; text-align: center;">
+          <p>Este é um e-mail automático gerado pelo sistema de Gestão de Empréstimos.</p>
+        </div>
+      </div>
+    `
+  }).catch(e => console.error("Error sending manager notification:", e));
+}
+
+function notifyUserAboutAuthorization(loan: any) {
+  if (!loan.email) return;
+
+  sendEmail({
+    to: loan.email,
+    subject: `✅ Empréstimo Aprovado: ${loan.equipment}`,
+    html: `
+      <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #e1e1e1; border-radius: 12px; padding: 24px; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+        <div style="text-align: center; border-bottom: 1px solid #eee; padding-bottom: 16px; margin-bottom: 20px;">
+          <h2 style="color: #28a745; margin: 0; font-size: 22px;">Sua Solicitação foi Aprovada!</h2>
+        </div>
+        <p>Olá <strong>${loan.requester_name}</strong>,</p>
+        <p>O seu empréstimo para o equipamento <strong>${loan.equipment}</strong> foi autorizado pela gestão.</p>
+        
+        <p>Abaixo está o seu **PIN de Liberação** de 4 dígitos:</p>
+        <div style="text-align: center; margin: 25px 0;">
+          <div style="display: inline-block; background-color: #e8f5e9; border: 2px dashed #28a745; border-radius: 12px; padding: 15px 30px; font-family: monospace; font-size: 32px; font-weight: bold; color: #28a745; letter-spacing: 4px;">
+            ${loan.pin}
+          </div>
+        </div>
+        
+        ${loan.terms ? `
+        <div style="background-color: #f8f9fa; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+          <strong style="display: block; margin-bottom: 8px; color: #555;">Termos e Condições do Empréstimo:</strong>
+          <p style="margin: 0; font-size: 14px; color: #666; white-space: pre-wrap;">${loan.terms}</p>
+        </div>
+        ` : ''}
+
+        <p>Acesse o acompanhamento de empréstimos públicos com sua matrícula <strong>${loan.registration}</strong>, confirme o PIN, assine os termos e preencha o checklist para retirar o equipamento.</p>
+        <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 16px; font-size: 12px; color: #777; text-align: center;">
+          <p>Este é um e-mail automático gerado pelo sistema de Gestão de Empréstimos.</p>
+        </div>
+      </div>
+    `
+  }).catch(e => console.error("Error sending user authorization notification:", e));
+}
+
 app.post("/api/loans", async (req, res) => {
-  const { requester_name, registration, phone, equipment, location, reason } = req.body;
+  const { requester_name, registration, email, phone, equipment, location, reason } = req.body;
+
+  if (!requester_name || !registration || !email || !phone || !equipment || !location || !reason) {
+    return res.status(400).json({ error: "Todos os campos são obrigatórios" });
+  }
+
+  const newLoanObj = {
+    requester_name, registration, email, phone, equipment, location, reason,
+    status: "pendente" as const,
+    created_at: new Date().toISOString(),
+    logs: [{ action: "Solicitado", user: requester_name, timestamp: new Date().toISOString() }]
+  };
 
   if (isDummyFirebase) {
     try {
-      const newLoan = localDb.addLoan({
-        requester_name,
-        registration,
-        phone,
-        equipment,
-        location,
-        reason,
-        status: "pendente",
-        created_at: new Date().toISOString(),
-        logs: []
-      });
+      const newLoan = localDb.addLoan(newLoanObj);
+      notifyManagerAboutNewLoan({ id: newLoan.id, ...newLoanObj });
       return res.json({ success: true, id: newLoan.id });
     } catch (error: any) {
       return res.status(400).json({ error: error.message });
@@ -1208,20 +1325,10 @@ app.post("/api/loans", async (req, res) => {
   }
 
   if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
-  
   try {
-    const newLoan = await addDoc(collection(db, "loans"), {
-      requester_name,
-      registration,
-      phone,
-      equipment,
-      location,
-      reason,
-      status: "pendente",
-      created_at: new Date().toISOString(),
-      logs: []
-    });
-    res.json({ success: true, id: newLoan.id });
+    const docRef = await addDoc(collection(db, "loans"), newLoanObj);
+    notifyManagerAboutNewLoan({ id: docRef.id, ...newLoanObj });
+    res.json({ success: true, id: docRef.id });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
@@ -1236,7 +1343,6 @@ app.get("/api/loans", async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
   }
-
   if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
   try {
     const q = query(collection(db, "loans"), orderBy("created_at", "desc"));
@@ -1248,184 +1354,259 @@ app.get("/api/loans", async (req, res) => {
   }
 });
 
-app.patch("/api/loans/:id/authorize", authenticate, async (req, res) => {
-  const { terms } = req.body;
-  const user = (req as any).user;
-  
-  if (!user.departments?.includes('ADM') && !user.departments?.includes('TI') && user.role !== 'admin') {
-    return res.status(403).json({ error: "Acesso negado" });
-  }
-
+// Public tracking endpoint
+app.get("/api/loans/track/:id", async (req, res) => {
   if (isDummyFirebase) {
     try {
       const loan = localDb.getLoan(req.params.id);
       if (!loan) return res.status(404).json({ error: "Empréstimo não encontrado" });
+      return res.json(sanitizeLoan(loan));
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+  if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
+  try {
+    const snap = await getDoc(doc(db, "loans", req.params.id));
+    if (!snap.exists()) return res.status(404).json({ error: "Empréstimo não encontrado" });
+    const loan = { id: snap.id, ...snap.data() };
+    res.json(sanitizeLoan(loan));
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
-      const pin = Math.floor(1000 + Math.random() * 9000).toString();
-      const logEntry = {
-        action: "Autorizado",
-        user: user.name,
-        timestamp: new Date().toISOString()
-      };
-      
-      const currentLogs = loan.logs || [];
-      localDb.updateLoan(req.params.id, { 
-        status: "autorizado",
-        terms,
-        pin,
-        authorized_by: user.name,
-        authorized_at: new Date().toISOString(),
-        logs: [...currentLogs, logEntry]
-      });
-      return res.json({ success: true, pin });
+// Public tracking by registration endpoint
+app.get("/api/loans/registration/:registration", async (req, res) => {
+  const { registration } = req.params;
+  if (!registration) {
+    return res.status(400).json({ error: "Matrícula é obrigatória" });
+  }
+
+  if (isDummyFirebase) {
+    try {
+      const loans = localDb.getLoans()
+        .filter((l: any) => l.registration === registration)
+        .map(sanitizeLoan)
+        .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      return res.json(loans);
     } catch (error: any) {
       return res.status(400).json({ error: error.message });
     }
   }
 
   if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
-
   try {
-    const pin = Math.floor(1000 + Math.random() * 9000).toString();
-    const logEntry = {
-      action: "Autorizado",
-      user: user.name,
-      timestamp: new Date().toISOString()
-    };
-    
-    await updateDoc(doc(db, "loans", req.params.id), { 
-      status: "autorizado",
-      terms,
-      pin,
-      authorized_by: user.name,
-      authorized_at: new Date().toISOString(),
-      logs: arrayUnion(logEntry)
+    const q = query(collection(db, "loans"), where("registration", "==", registration));
+    const querySnapshot = await getDocs(q);
+    const loans = querySnapshot.docs.map(d => sanitizeLoan({ id: d.id, ...d.data() }));
+    loans.sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    res.json(loans);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.patch("/api/loans/:id/authorize", authenticate, async (req, res) => {
+  const { terms } = req.body;
+  const user = (req as any).user;
+  if (!user.departments?.includes('ADM') && !user.departments?.includes('TI') && user.role !== 'admin') {
+    return res.status(403).json({ error: "Acesso negado" });
+  }
+  if (!terms) return res.status(400).json({ error: "Termos são obrigatórios" });
+
+  const pin = Math.floor(1000 + Math.random() * 9000).toString();
+  const logEntry = { action: "Autorizado", user: user.name, timestamp: new Date().toISOString(), details: terms };
+
+  if (isDummyFirebase) {
+    try {
+      const loan = localDb.getLoan(req.params.id);
+      if (!loan) return res.status(404).json({ error: "Empréstimo não encontrado" });
+      if (loan.status !== 'pendente') return res.status(400).json({ error: "Empréstimo não está pendente" });
+      
+      const currentLogs = loan.logs || [];
+      const updatedData = { 
+        status: "autorizado" as const, 
+        terms, 
+        pin, 
+        authorized_by: user.name, 
+        authorized_at: new Date().toISOString(), 
+        logs: [...currentLogs, logEntry] 
+      };
+      
+      localDb.updateLoan(req.params.id, updatedData);
+      notifyUserAboutAuthorization({ id: loan.id, ...loan, ...updatedData });
+      return res.json({ success: true, pin });
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+  if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
+  try {
+    const loanRef = doc(db, "loans", req.params.id);
+    const snap = await getDoc(loanRef);
+    if (!snap.exists()) return res.status(404).json({ error: "Empréstimo não encontrado" });
+    const loanData = snap.data();
+    if (loanData.status !== 'pendente') return res.status(400).json({ error: "Empréstimo não está pendente" });
+
+    await updateDoc(loanRef, { 
+      status: "autorizado", 
+      terms, 
+      pin, 
+      authorized_by: user.name, 
+      authorized_at: new Date().toISOString(), 
+      logs: arrayUnion(logEntry) 
     });
+    
+    notifyUserAboutAuthorization({ id: snap.id, ...loanData, pin, terms });
     res.json({ success: true, pin });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
 });
 
-app.patch("/api/loans/:id/sign", async (req, res) => {
-  const { pin, signature_name, signature_registration, signature_date } = req.body;
+
+app.patch("/api/loans/:id/reject", authenticate, async (req, res) => {
+  const { reason } = req.body;
+  const user = (req as any).user;
+  if (!user.departments?.includes('ADM') && !user.departments?.includes('TI') && user.role !== 'admin') {
+    return res.status(403).json({ error: "Acesso negado" });
+  }
+  if (!reason || !reason.trim()) return res.status(400).json({ error: "Motivo da reprovação é obrigatório" });
 
   if (isDummyFirebase) {
     try {
       const loan = localDb.getLoan(req.params.id);
       if (!loan) return res.status(404).json({ error: "Empréstimo não encontrado" });
-      
-      if (loan.pin !== pin) {
-        return res.status(401).json({ error: "Senha inválida" });
-      }
-
-      const logEntry = {
-        action: "Liberado (Assinado)",
-        user: signature_name,
-        timestamp: new Date().toISOString()
-      };
-
+      if (loan.status !== 'pendente') return res.status(400).json({ error: "Apenas empréstimos pendentes podem ser reprovados" });
+      const logEntry = { action: "Reprovado", user: user.name, timestamp: new Date().toISOString(), details: reason };
       const currentLogs = loan.logs || [];
-      localDb.updateLoan(req.params.id, { 
-        status: "em_uso",
-        signature_name,
-        signature_registration,
-        signature_date,
-        released_at: new Date().toISOString(),
-        logs: [...currentLogs, logEntry]
-      });
+      localDb.updateLoan(req.params.id, { status: "recusado", rejected_by: user.name, rejected_at: new Date().toISOString(), rejection_reason: reason, logs: [...currentLogs, logEntry] });
       return res.json({ success: true });
     } catch (error: any) {
       return res.status(400).json({ error: error.message });
     }
   }
-
   if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
-  
   try {
     const loanRef = doc(db, "loans", req.params.id);
-    const loanSnap = await getDoc(loanRef);
-    
-    if (!loanSnap.exists()) return res.status(404).json({ error: "Empréstimo não encontrado" });
-    const loanData = loanSnap.data();
-    
-    if (loanData.pin !== pin) {
-      return res.status(401).json({ error: "Senha inválida" });
-    }
-
-    const logEntry = {
-      action: "Liberado (Assinado)",
-      user: signature_name,
-      timestamp: new Date().toISOString()
-    };
-
-    await updateDoc(loanRef, { 
-      status: "em_uso",
-      signature_name,
-      signature_registration,
-      signature_date,
-      released_at: new Date().toISOString(),
-      logs: arrayUnion(logEntry)
-    });
+    const snap = await getDoc(loanRef);
+    if (!snap.exists()) return res.status(404).json({ error: "Empréstimo não encontrado" });
+    if (snap.data().status !== 'pendente') return res.status(400).json({ error: "Apenas empréstimos pendentes podem ser reprovados" });
+    const logEntry = { action: "Reprovado", user: user.name, timestamp: new Date().toISOString(), details: reason };
+    await updateDoc(loanRef, { status: "recusado", rejected_by: user.name, rejected_at: new Date().toISOString(), rejection_reason: reason, logs: arrayUnion(logEntry) });
     res.json({ success: true });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
   }
 });
 
-app.patch("/api/loans/:id/complete", authenticate, async (req, res) => {
-  const { return_condition, return_problem } = req.body;
-  const user = (req as any).user;
-  
-  if (!user.departments?.includes('ADM') && !user.departments?.includes('TI') && user.role !== 'admin') {
-    return res.status(403).json({ error: "Acesso negado" });
+// Release endpoint (replaces /sign) — validates PIN, captures signature + initial checklist
+app.patch("/api/loans/:id/release", async (req, res) => {
+  const { pin, signature_name, signature_registration, signature_email, checklist_initial } = req.body;
+  if (!pin || !signature_name || !signature_registration || !signature_email || !checklist_initial) {
+    return res.status(400).json({ error: "Todos os campos são obrigatórios para liberação" });
   }
+  const now = new Date().toISOString();
 
   if (isDummyFirebase) {
     try {
       const loan = localDb.getLoan(req.params.id);
       if (!loan) return res.status(404).json({ error: "Empréstimo não encontrado" });
-
-      const logEntry = {
-        action: "Concluído",
-        user: user.name,
-        timestamp: new Date().toISOString(),
-        details: return_condition === 'nao' ? `Problema: ${return_problem}` : 'Devolvido em perfeito estado'
-      };
-
+      if (loan.status !== 'autorizado') return res.status(400).json({ error: "Empréstimo não está disponível para liberação" });
+      if (loan.pin !== pin) return res.status(401).json({ error: "PIN inválido" });
+      const logEntry = { action: "Liberado / Assinado", user: signature_name, timestamp: now, details: checklist_initial };
       const currentLogs = loan.logs || [];
-      localDb.updateLoan(req.params.id, { 
-        status: "concluido",
-        return_condition,
-        return_problem: return_problem || null,
-        completed_at: new Date().toISOString(),
-        completed_by: user.name,
-        logs: [...currentLogs, logEntry]
-      });
+      localDb.updateLoan(req.params.id, { status: "em_uso", signature_name, signature_registration, signature_email, signature_date: now, released_at: now, checklist_initial, checklist_initial_at: now, logs: [...currentLogs, logEntry] });
       return res.json({ success: true });
     } catch (error: any) {
       return res.status(400).json({ error: error.message });
     }
   }
-
   if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
-  
   try {
-    const logEntry = {
-      action: "Concluído",
-      user: user.name,
-      timestamp: new Date().toISOString(),
-      details: return_condition === 'nao' ? `Problema: ${return_problem}` : 'Devolvido em perfeito estado'
-    };
+    const loanRef = doc(db, "loans", req.params.id);
+    const snap = await getDoc(loanRef);
+    if (!snap.exists()) return res.status(404).json({ error: "Empréstimo não encontrado" });
+    const loanData = snap.data();
+    if (loanData.status !== 'autorizado') return res.status(400).json({ error: "Empréstimo não está disponível para liberação" });
+    if (loanData.pin !== pin) return res.status(401).json({ error: "PIN inválido" });
+    const logEntry = { action: "Liberado / Assinado", user: signature_name, timestamp: now, details: checklist_initial };
+    await updateDoc(loanRef, { status: "em_uso", signature_name, signature_registration, signature_email, signature_date: now, released_at: now, checklist_initial, checklist_initial_at: now, logs: arrayUnion(logEntry) });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
-    await updateDoc(doc(db, "loans", req.params.id), { 
-      status: "concluido",
-      return_condition,
-      return_problem: return_problem || null,
-      completed_at: new Date().toISOString(),
-      completed_by: user.name,
-      logs: arrayUnion(logEntry)
-    });
+// Return endpoint — public, requires same PIN used at release
+app.patch("/api/loans/:id/return", async (req, res) => {
+  const { pin, checklist_return, return_condition, return_problem } = req.body;
+  if (!pin || !checklist_return || !return_condition) {
+    return res.status(400).json({ error: "PIN, checklist de devolução e condição são obrigatórios" });
+  }
+  if (return_condition === 'nao' && !return_problem) {
+    return res.status(400).json({ error: "Descrição do problema é obrigatória quando a condição é 'não'" });
+  }
+  const now = new Date().toISOString();
+
+  if (isDummyFirebase) {
+    try {
+      const loan = localDb.getLoan(req.params.id);
+      if (!loan) return res.status(404).json({ error: "Empréstimo não encontrado" });
+      if (loan.status !== 'em_uso') return res.status(400).json({ error: "Empréstimo não está em uso" });
+      if (loan.pin !== pin) return res.status(401).json({ error: "PIN inválido" });
+      const details = `Checklist: ${checklist_return}${return_condition === 'nao' ? ` | Problema: ${return_problem}` : ' | Devolvido em perfeito estado'}`;
+      const logEntry = { action: "Concluído (Devolução)", user: loan.signature_name || loan.requester_name, timestamp: now, details };
+      const currentLogs = loan.logs || [];
+      localDb.updateLoan(req.params.id, { status: "concluido", checklist_return, checklist_return_at: now, return_condition, return_problem: return_problem || null, completed_by: loan.signature_name || loan.requester_name, completed_at: now, completed_via: 'pin', logs: [...currentLogs, logEntry] });
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+  if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
+  try {
+    const loanRef = doc(db, "loans", req.params.id);
+    const snap = await getDoc(loanRef);
+    if (!snap.exists()) return res.status(404).json({ error: "Empréstimo não encontrado" });
+    const loanData = snap.data();
+    if (loanData.status !== 'em_uso') return res.status(400).json({ error: "Empréstimo não está em uso" });
+    if (loanData.pin !== pin) return res.status(401).json({ error: "PIN inválido" });
+    const details = `Checklist: ${checklist_return}${return_condition === 'nao' ? ` | Problema: ${return_problem}` : ' | Devolvido em perfeito estado'}`;
+    const logEntry = { action: "Concluído (Devolução)", user: loanData.signature_name || loanData.requester_name, timestamp: now, details };
+    await updateDoc(loanRef, { status: "concluido", checklist_return, checklist_return_at: now, return_condition, return_problem: return_problem || null, completed_by: loanData.signature_name || loanData.requester_name, completed_at: now, completed_via: 'pin', logs: arrayUnion(logEntry) });
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Fallback: admin-only manual completion without PIN (exceptional use)
+app.patch("/api/loans/:id/complete", authenticate, async (req, res) => {
+  const { return_condition, return_problem } = req.body;
+  const user = (req as any).user;
+  if (user.role !== 'admin') {
+    return res.status(403).json({ error: "Apenas administradores podem encerrar manualmente" });
+  }
+  const now = new Date().toISOString();
+
+  if (isDummyFirebase) {
+    try {
+      const loan = localDb.getLoan(req.params.id);
+      if (!loan) return res.status(404).json({ error: "Empréstimo não encontrado" });
+      const logEntry = { action: "Concluído (Manual)", user: user.name, timestamp: now, details: return_condition === 'nao' ? `Problema: ${return_problem}` : 'Devolvido em perfeito estado' };
+      const currentLogs = loan.logs || [];
+      localDb.updateLoan(req.params.id, { status: "concluido", return_condition, return_problem: return_problem || null, completed_at: now, completed_by: user.name, completed_via: 'gestor_manual', logs: [...currentLogs, logEntry] });
+      return res.json({ success: true });
+    } catch (error: any) {
+      return res.status(400).json({ error: error.message });
+    }
+  }
+  if (!db) return res.status(500).json({ error: "Banco de dados não inicializado" });
+  try {
+    const logEntry = { action: "Concluído (Manual)", user: user.name, timestamp: now, details: return_condition === 'nao' ? `Problema: ${return_problem}` : 'Devolvido em perfeito estado' };
+    await updateDoc(doc(db, "loans", req.params.id), { status: "concluido", return_condition, return_problem: return_problem || null, completed_at: now, completed_by: user.name, completed_via: 'gestor_manual', logs: arrayUnion(logEntry) });
     res.json({ success: true });
   } catch (error: any) {
     res.status(400).json({ error: error.message });
@@ -1467,6 +1648,78 @@ async function setupVite() {
 }
 
 setupVite().catch(err => console.error("Vite setup failed:", err));
+
+// Overdue Loans Verification & Alert routine
+async function checkAndAlertOverdueLoans() {
+  console.log("⏰ [Rotina] Verificando se há empréstimos atrasados (+24h)...");
+  try {
+    let overdueLoans: any[] = [];
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    if (isDummyFirebase) {
+      overdueLoans = localDb.getLoans().filter((l: any) => 
+        l.status === 'em_uso' && 
+        new Date(l.released_at || l.created_at) < oneDayAgo
+      );
+    } else {
+      if (db) {
+        const q = query(collection(db, "loans"), where("status", "==", "em_uso"));
+        const snap = await getDocs(q);
+        overdueLoans = snap.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .filter((l: any) => new Date(l.released_at || l.created_at) < oneDayAgo);
+      }
+    }
+
+    if (overdueLoans.length > 0) {
+      console.log(`⚠️ [Rotina] Encontrados ${overdueLoans.length} empréstimos atrasados.`);
+      const managerEmail = process.env.MANAGER_EMAIL;
+      if (managerEmail) {
+        const loansListHtml = overdueLoans.map((l: any) => `
+          <li style="margin-bottom: 12px; padding: 12px; bg-color: #fff8f8; border: 1px solid #fbdad7; border-radius: 8px;">
+            <strong>Equipamento:</strong> ${l.equipment} <br/>
+            <strong>Solicitante:</strong> ${l.requester_name} (${l.registration}) <br/>
+            <strong>Contato:</strong> ${l.email} | ${l.phone} <br/>
+            <strong>Retirado em:</strong> ${new Date(l.released_at || l.created_at).toLocaleString('pt-BR')} <br/>
+            <strong>Tempo em aberto:</strong> Mais de 24 horas ativo sem devolução.
+          </li>
+        `).join("");
+
+        await sendEmail({
+          to: managerEmail,
+          subject: "⚠️ ALERTA: Empréstimos de Equipamento Atrasados (+24h)",
+          html: `
+            <div style="font-family: sans-serif; color: #333; max-width: 600px; margin: 0 auto; border: 1px solid #fcd3d1; border-radius: 12px; padding: 24px; box-shadow: 0 4px 12px rgba(217,83,79,0.05);">
+              <h2 style="color: #d9534f; margin-top: 0; border-bottom: 1px solid #fbdad7; padding-bottom: 12px;">Alerta de Atraso em Empréstimo</h2>
+              <p>Os seguintes empréstimos de equipamentos ultrapassaram o limite de devolução recomendado (24 horas) e permanecem ativos:</p>
+              <ul style="padding-left: 0; list-style-type: none;">
+                ${loansListHtml}
+              </ul>
+              <p>Por favor, verifique a situação com os solicitantes ou realize a devolução manual caso o equipamento já tenha sido retornado fisicamente.</p>
+              <div style="margin-top: 30px; border-top: 1px solid #eee; padding-top: 16px; font-size: 12px; color: #777; text-align: center;">
+                <p>Este é um e-mail automático enviado pelo sistema de Gestão de Empréstimos.</p>
+              </div>
+            </div>
+          `
+        });
+      }
+    } else {
+      console.log("✅ [Rotina] Nenhum empréstimo atrasado encontrado.");
+    }
+  } catch (error) {
+    console.error("❌ [Rotina] Erro ao verificar empréstimos atrasados:", error);
+  }
+}
+
+// Run routine on startup (after 10s) and then every 1 hour
+setTimeout(() => {
+  checkAndAlertOverdueLoans();
+}, 10000);
+
+setInterval(() => {
+  checkAndAlertOverdueLoans();
+}, 60 * 60 * 1000);
+
 
 const PORT = process.env.PORT || 3000;
 if (process.env.NODE_ENV !== "production" || !process.env.VERCEL) {
