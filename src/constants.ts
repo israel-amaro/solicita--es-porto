@@ -3,7 +3,7 @@
 export const USEFUL_LINKS = [
   {
     title: "Diário de Classe (Pauta e RH)",
-    url: "https://portal.findes.org.br/Corpore.Net/Login.aspx?autoload=false&ReturnUrl=%2fCorpore.Net%2fMain.aspx%3fActionID%3dEduDiarioClasseActionWeb%26SelectedMenuIDKey%3dmnDiarioClasse",
+    url: "https://portal.findes.org.br/FrameHTML/web/app/Edu/PortalDoProfessor/#/login?autoload=false&ReturnUrl=%2fCorpore.Net%2fMain.aspx%3fActionID%3dEduDiarioClasseActionWeb%26SelectedMenuIDKey%3dmnDiarioClasse",
     user: "Nº de Matrícula",
     desc: "Acesso ao Diário de Classe, pautas e recursos humanos da Findes.",
     category: "Acadêmico"
