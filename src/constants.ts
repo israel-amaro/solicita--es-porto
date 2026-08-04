@@ -17,7 +17,7 @@ export const USEFUL_LINKS = [
   },
   {
     title: "Horário de Aula",
-    url: "https://portal.findes.org.br",
+    url: "https://spe.findes.org.br/",
     user: "CPF",
     desc: "Consulta e acompanhamento do horário de aulas institucional.",
     category: "Acadêmico"
